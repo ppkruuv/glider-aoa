@@ -8,7 +8,7 @@
     <style>
         body {
             font-family: Arial, sans-serif;
-            max-width: 1000px;
+            max-width: 800px;
             margin: 0 auto;
             padding: 20px;
             background-color: #f0f0f0;
@@ -19,7 +19,9 @@
             border-radius: 8px;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
         }
-        .controls { margin-bottom: 20px; }
+        .controls {
+            margin-bottom: 20px;
+        }
         button {
             background-color: #007bff;
             color: white;
@@ -27,8 +29,13 @@
             padding: 10px 20px;
             border-radius: 4px;
             cursor: pointer;
+            transition: background-color 0.3s;
         }
         button:hover { background-color: #0056b3; }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
         .metrics-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -91,18 +98,25 @@
         <h1>Glider Angle of Attack Analysis</h1>
         
         <div class="controls">
-            <button id="connectButton">Connect to Serial Port</button>
-            <button id="setZeroButton" class="ml-4" style="margin-left: 10px; background-color: #28a745;">Set Zero</button>
+            <button id="serialButton">Connect Serial</button>
+            <button id="bluetoothButton" style="margin-left: 10px;">Connect Bluetooth</button>
+            <button id="setZeroButton" style="margin-left: 10px; background-color: #28a745;">Set Zero</button>
+            <button id="recordButton" style="margin-left: 10px; background-color: #dc3545;">Start Recording</button>
+            <button id="downloadButton" style="margin-left: 10px; background-color: #6c757d;" disabled>Download CSV</button>
         </div>
-        
+
         <div id="statusMessage" class="status disconnected">
-            Not connected to serial port
+            Not connected
         </div>
 
         <div id="signalStatus" class="signal-status signal-lost">
             Signal Lost
         </div>
 
+        <div id="recordingStatus" style="display: none; color: #dc3545; margin-top: 10px; font-weight: bold;">
+            Recording data...
+        </div>
+        
         <div class="metrics-grid">
             <div class="metric-card">
                 <div class="metric-value" id="currentAngle">--</div>
@@ -136,11 +150,13 @@
     </div>
 
     <script>
+
+        <script>
         let port;
         let reader;
         let chartInstance;
         const updateInterval = 50;
-        const maxDataPoints = 200; // Increased for better trend visibility
+        const maxDataPoints = 200;
         const angleData = [];
         const timeLabels = [];
         const rollingWindow = [];
@@ -154,120 +170,11 @@
         let bluetoothDevice = null;
         let bluetoothCharacteristic = null;
 
-        // Data logging functions
-        function startRecording() {
-            recordedData = [];
-            isRecording = true;
-            document.getElementById('recordButton').textContent = 'Stop Recording';
-            document.getElementById('recordButton').style.backgroundColor = '#28a745';
-            document.getElementById('recordingStatus').style.display = 'block';
-            document.getElementById('downloadButton').disabled = true;
-        }
-
-        function stopRecording() {
-            isRecording = false;
-            document.getElementById('recordButton').textContent = 'Start Recording';
-            document.getElementById('recordButton').style.backgroundColor = '#dc3545';
-            document.getElementById('recordingStatus').style.display = 'none';
-            document.getElementById('downloadButton').disabled = false;
-        }
-
-        function downloadCSV() {
-            if (recordedData.length === 0) return;
-
-            const csv = [
-                ['Timestamp', 'Angle', 'RSSI', 'SNR', 'Rolling Average', 'Stability Score'].join(','),
-                ...recordedData.map(row => row.join(','))
-            ].join('\\n');
-
-            const blob = new Blob([csv], { type: 'text/csv' });
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.setAttribute('hidden', '');
-            a.setAttribute('href', url);
-            a.setAttribute('download', 'glider_data.csv');
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-        }
-
-        // Bluetooth functions
-        async function connectBluetooth() {
-            try {
-                bluetoothDevice = await navigator.bluetooth.requestDevice({
-                    filters: [{
-                        name: 'GliderAoA'
-                    }],
-                    optionalServices: ['4fafc201-1fb5-459e-8fcc-c5c9c331914b']
-                });
-
-                const server = await bluetoothDevice.gatt.connect();
-                const service = await server.getPrimaryService('4fafc201-1fb5-459e-8fcc-c5c9c331914b');
-                bluetoothCharacteristic = await service.getCharacteristic('beb5483e-36e1-4688-b7f5-ea07361b26a8');
-                
-                await bluetoothCharacteristic.startNotifications();
-                bluetoothCharacteristic.addEventListener('characteristicvaluechanged', handleBluetoothData);
-                
-                document.getElementById('statusMessage').className = 'status connected';
-                document.getElementById('statusMessage').textContent = 'Connected via Bluetooth';
-                
-                // Disable serial button when connected via bluetooth
-                document.getElementById('serialButton').disabled = true;
-                document.getElementById('bluetoothButton').textContent = 'Disconnect Bluetooth';
-            } catch (error) {
-                console.error('Bluetooth Error:', error);
-                document.getElementById('statusMessage').className = 'status disconnected';
-                document.getElementById('statusMessage').textContent = 'Bluetooth Error: ' + error.message;
-            }
-        }
-
-        function handleBluetoothData(event) {
-            const value = event.target.value;
-            const decoder = new TextDecoder();
-            const data = JSON.parse(decoder.decode(value));
-            
-            processData(data);
-        }
-
-        function processData(data) {
-            const angle = parseFloat(data.angle) - zeroOffset;
-            document.getElementById('angleValue').textContent = angle.toFixed(1);
-            updateChart(angle);
-            
-            if (data.rssi) document.getElementById('rssiValue').textContent = data.rssi;
-            if (data.snr) document.getElementById('snrValue').textContent = data.snr;
-            
-            if (isRecording) {
-                const timestamp = new Date().toISOString();
-                const avgAngle = document.getElementById('avgAngle').textContent;
-                const stabilityScore = document.getElementById('stabilityScore').textContent;
-                
-                recordedData.push([
-                    timestamp,
-                    angle.toFixed(1),
-                    data.rssi || '',
-                    data.snr || '',
-                    avgAngle,
-                    stabilityScore
-                ]);
-            }
-        }
-
-        function calculateStability(values, windowSize) {
-            if (values.length < windowSize) return null;
-            const recentValues = values.slice(-windowSize);
-            const avg = recentValues.reduce((a, b) => a + b) / windowSize;
-            const squaredDiffs = recentValues.map(x => Math.pow(x - avg, 2));
-            const variance = squaredDiffs.reduce((a, b) => a + b) / windowSize;
-            const stdDev = Math.sqrt(variance);
-            return {
-                average: avg,
-                deviation: stdDev,
-                stability: Math.max(0, Math.min(100, 100 - (stdDev * 5))) // Convert to 0-100 score
-            };
-        }
-
+        // Initialize Chart
         function initChart() {
+            if (chartInstance) {
+                chartInstance.destroy();
+            }
             const ctx = document.getElementById('angleChart').getContext('2d');
             chartInstance = new Chart(ctx, {
                 type: 'line',
@@ -300,15 +207,34 @@
                                 stepSize: 15
                             }
                         }
-                    },
-                    plugins: {
-                        title: {
-                            display: true,
-                            text: 'Angle of Attack Over Time'
-                        }
                     }
                 }
             });
+        }
+
+        // Set Zero button handler
+        document.getElementById('setZeroButton').addEventListener('click', () => {
+            const currentValue = document.getElementById('currentAngle').textContent;
+            if (currentValue !== '--') {
+                zeroOffset = parseFloat(currentValue) + zeroOffset;
+                chartInstance.options.scales.y.min = -45;
+                chartInstance.options.scales.y.max = 45;
+                chartInstance.update('none');
+            }
+        });
+
+        function calculateStability(values, windowSize) {
+            if (values.length < windowSize) return null;
+            const recentValues = values.slice(-windowSize);
+            const avg = recentValues.reduce((a, b) => a + b) / windowSize;
+            const squaredDiffs = recentValues.map(x => Math.pow(x - avg, 2));
+            const variance = squaredDiffs.reduce((a, b) => a + b) / windowSize;
+            const stdDev = Math.sqrt(variance);
+            return {
+                average: avg,
+                deviation: stdDev,
+                stability: Math.max(0, Math.min(100, 100 - (stdDev * 5)))
+            };
         }
 
         function updateChart(angle) {
@@ -321,11 +247,9 @@
             rollingWindow.push(angle);
             stabilityWindow.push(angle);
             
-            // Maintain window sizes
-            if (rollingWindow.length > 200) rollingWindow.shift(); // 10 seconds at 50ms
-            if (stabilityWindow.length > 60) stabilityWindow.shift(); // 3 seconds at 50ms
+            if (rollingWindow.length > 200) rollingWindow.shift();
+            if (stabilityWindow.length > 60) stabilityWindow.shift();
             
-            // Calculate metrics
             const tenSecMetrics = calculateStability(rollingWindow, 200);
             const threeSecMetrics = calculateStability(stabilityWindow, 60);
             
@@ -366,84 +290,75 @@
             }
         }
 
-        async function connectSerial() {
-            try {
-                port = await navigator.serial.requestPort();
-                await port.open({ baudRate: 115200 });
+        // Data logging functions
+        function startRecording() {
+            recordedData = [];
+            isRecording = true;
+            document.getElementById('recordButton').textContent = 'Stop Recording';
+            document.getElementById('recordButton').style.backgroundColor = '#28a745';
+            document.getElementById('recordingStatus').style.display = 'block';
+            document.getElementById('downloadButton').disabled = true;
+        }
+
+        function stopRecording() {
+            isRecording = false;
+            document.getElementById('recordButton').textContent = 'Start Recording';
+            document.getElementById('recordButton').style.backgroundColor = '#dc3545';
+            document.getElementById('recordingStatus').style.display = 'none';
+            document.getElementById('downloadButton').disabled = false;
+        }
+
+        function downloadCSV() {
+            if (recordedData.length === 0) return;
+
+            const csv = [
+                ['Timestamp', 'Angle', 'RSSI', 'SNR', 'Rolling Average', 'Stability Score'].join(','),
+                ...recordedData.map(row => row.join(','))
+            ].join('\n');
+
+            const blob = new Blob([csv], { type: 'text/csv' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.setAttribute('hidden', '');
+            a.setAttribute('href', url);
+            a.setAttribute('download', 'glider_data.csv');
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+
+        // Process incoming data
+        function processData(data) {
+            const angle = parseFloat(data.angle) - zeroOffset;
+            document.getElementById('currentAngle').textContent = angle.toFixed(1);
+            updateChart(angle);
+            
+            if (data.rssi) document.getElementById('rssiValue').textContent = data.rssi;
+            if (data.snr) document.getElementById('snrValue').textContent = data.snr;
+            
+            lastReceivedTime = Date.now();
+            const signalStatus = document.getElementById('signalStatus');
+            signalStatus.className = 'signal-status signal-active';
+            signalStatus.textContent = 'Signal Active';
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+            
+            if (isRecording) {
+                const timestamp = new Date().toISOString();
+                const avgAngle = document.getElementById('avgAngle').textContent;
+                const stabilityScore = document.getElementById('stabilityScore').textContent;
                 
-                const decoder = new TextDecoderStream();
-                const inputStream = port.readable.pipeThrough(decoder);
-                reader = inputStream.getReader();
-                
-                document.getElementById('statusMessage').className = 'status connected';
-                document.getElementById('statusMessage').textContent = 'Connected to serial port';
-                document.getElementById('connectButton').textContent = 'Disconnect';
-                
-                initChart();
-                signalCheckInterval = setInterval(checkSignalStatus, 1000);
-                
-                let buffer = '';
-                
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    
-                    buffer += value;
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop();
-                    
-                    for (const line of lines) {
-                        if (line.includes('Content:')) {
-                            const match = line.match(/Content: '([^']+)'/);
-                            if (match) {
-                                const content = match[1].trim();
-                                if (/^\d+\.?\d*$/.test(content)) {
-                                    const rawAngle = parseFloat(content);
-                                    const angle = rawAngle - zeroOffset;
-                                    document.getElementById('currentAngle').textContent = angle.toFixed(1);
-                                    updateChart(angle);
-                                }
-                            }
-                        }
-                        if (line.includes('RSSI:')) {
-                            const match = line.match(/RSSI: (-?\d+)/);
-                            if (match) {
-                                document.getElementById('rssiValue').textContent = match[1];
-                            }
-                        }
-                        if (line.includes('SNR:')) {
-                            const match = line.match(/SNR: (-?\d+\.?\d*)/);
-                            if (match) {
-                                document.getElementById('snrValue').textContent = match[1];
-                                lastReceivedTime = Date.now();
-                                const signalStatus = document.getElementById('signalStatus');
-                                signalStatus.className = 'signal-status signal-active';
-                                signalStatus.textContent = 'Signal Active';
-                                document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
-                            }
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                document.getElementById('statusMessage').className = 'status disconnected';
-                document.getElementById('statusMessage').textContent = 'Error: ' + error.message;
+                recordedData.push([
+                    timestamp,
+                    angle.toFixed(1),
+                    data.rssi || '',
+                    data.snr || '',
+                    avgAngle,
+                    stabilityScore
+                ]);
             }
         }
 
-        // Zero calibration handler
-        document.getElementById('setZeroButton').addEventListener('click', () => {
-            const currentValue = document.getElementById('currentAngle').textContent;
-            if (currentValue !== '--') {
-                zeroOffset = parseFloat(currentValue) + zeroOffset; // Add to existing offset
-                
-                // Don't clear the data arrays, just update the chart's range
-                chartInstance.options.scales.y.min = -45;
-                chartInstance.options.scales.y.max = 45;
-                chartInstance.update('none');
-            }
-        });
-
+        // Serial disconnect function
         async function disconnectSerial() {
             if (port) {
                 try {
@@ -463,25 +378,7 @@
             }
         }
 
-        async function disconnectBluetooth() {
-            if (bluetoothDevice && bluetoothDevice.gatt.connected) {
-                try {
-                    await bluetoothDevice.gatt.disconnect();
-                    bluetoothDevice = null;
-                    bluetoothCharacteristic = null;
-                    document.getElementById('statusMessage').className = 'status disconnected';
-                    document.getElementById('statusMessage').textContent = 'Disconnected from Bluetooth';
-                    document.getElementById('bluetoothButton').textContent = 'Connect Bluetooth';
-                    document.getElementById('serialButton').disabled = false;
-                    document.getElementById('signalStatus').className = 'signal-status signal-lost';
-                    document.getElementById('signalStatus').textContent = 'Signal Lost';
-                } catch (error) {
-                    console.error('Error disconnecting Bluetooth:', error);
-                }
-            }
-        }
-
-        // Event listener for serial connection
+        // Serial connect handler
         document.getElementById('serialButton').addEventListener('click', async () => {
             if (port) {
                 await disconnectSerial();
@@ -538,10 +435,6 @@
                                 if (match) {
                                     document.getElementById('snrValue').textContent = match[1];
                                     lastReceivedTime = Date.now();
-                                    const signalStatus = document.getElementById('signalStatus');
-                                    signalStatus.className = 'signal-status signal-active';
-                                    signalStatus.textContent = 'Signal Active';
-                                    document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
                                 }
                             }
                         }
@@ -554,7 +447,75 @@
             }
         });
 
-        // Event listener for bluetooth connection
+        // Bluetooth functions
+        async function connectBluetooth() {
+            try {
+                bluetoothDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{
+                        name: 'GliderAoA'
+                    }],
+                    optionalServices: ['4fafc201-1fb5-459e-8fcc-c5c9c331914b']
+                });
+
+                const server = await bluetoothDevice.gatt.connect();
+                const service = await server.getPrimaryService('4fafc201-1fb5-459e-8fcc-c5c9c331914b');
+                bluetoothCharacteristic = await service.getCharacteristic('beb5483e-36e1-4688-b7f5-ea07361b26a8');
+                
+                await bluetoothCharacteristic.startNotifications();
+                bluetoothCharacteristic.addEventListener('characteristicvaluechanged', handleBluetoothData);
+                
+                document.getElementById('statusMessage').className = 'status connected';
+                document.getElementById('statusMessage').textContent = 'Connected via Bluetooth';
+                document.getElementById('bluetoothButton').textContent = 'Disconnect Bluetooth';
+                document.getElementById('serialButton').disabled = true;
+
+                initChart();
+                signalCheckInterval = setInterval(checkSignalStatus, 1000);
+            } catch (error) {
+                console.error('Bluetooth Error:', error);
+                document.getElementById('statusMessage').className = 'status disconnected';
+                document.getElementById('statusMessage').textContent = 'Bluetooth Error: ' + error.message;
+            }
+        }
+
+        async function disconnectBluetooth() {
+            if (bluetoothDevice && bluetoothDevice.gatt.connected) {
+                try {
+                    await bluetoothDevice.gatt.disconnect();
+                    bluetoothDevice = null;
+                    bluetoothCharacteristic = null;
+                    document.getElementById('statusMessage').className = 'status disconnected';
+                    document.getElementById('statusMessage').textContent = 'Disconnected from Bluetooth';
+                    document.getElementById('bluetoothButton').textContent = 'Connect Bluetooth';
+                    document.getElementById('serialButton').disabled = false;
+                    document.getElementById('signalStatus').className = 'signal-status signal-lost';
+                    document.getElementById('signalStatus').textContent = 'Signal Lost';
+                } catch (error) {
+                    console.error('Error disconnecting Bluetooth:', error);
+                }
+            }
+        }
+
+        function handleBluetoothData(event) {
+            const value = event.target.value;
+            const decoder = new TextDecoder();
+            const data = JSON.parse(decoder.decode(value));
+            processData(data);
+        }
+
+        // Recording button handler
+        document.getElementById('recordButton').addEventListener('click', () => {
+            if (isRecording) {
+                stopRecording();
+            } else {
+                startRecording();
+            }
+        });
+
+        // Download button handler
+        document.getElementById('downloadButton').addEventListener('click', downloadCSV);
+
+        // Bluetooth button handler
         document.getElementById('bluetoothButton').addEventListener('click', async () => {
             if (bluetoothDevice && bluetoothDevice.gatt.connected) {
                 await disconnectBluetooth();
@@ -562,6 +523,9 @@
                 await connectBluetooth();
             }
         });
+
+        // Initialize the chart on load
+        initChart();
     </script>
 </body>
 </html>
